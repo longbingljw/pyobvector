@@ -43,7 +43,7 @@ class ObReflectionTest(unittest.TestCase):
         instead of dict spec, causing AttributeError: 'str' object has no attribute 'get'.
         """
         from pyobvector.client import ObVecClient
-        from sqlalchemy import text, MetaData, Table
+        from sqlalchemy import text, MetaData, Table, inspect
         from pyobvector.schema import VECTOR
         
         # Create a client to connect to real OceanBase
@@ -90,13 +90,13 @@ class ObReflectionTest(unittest.TestCase):
                 embeddings VECTOR(1024),
                 chunk_metadata JSON,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                
-                -- Foreign key with RESTRICT actions (the original bug trigger during document indexing)
+
+                -- Foreign key with RESTRICT actions (designed to trip SQLAlchemy regex)
                 CONSTRAINT fk_document_restrict 
                     FOREIGN KEY (document_id) 
-                    REFERENCES {documents_table}(id) 
-                    ON UPDATE RESTRICT ON DELETE RESTRICT,
-                    
+                    REFERENCES `{documents_table}`(id)
+                    /*!50700 ON DELETE RESTRICT */ /*!50700 ON UPDATE RESTRICT */,
+
                 -- Complex business rule constraint for document indexing
                 CONSTRAINT chk_document_index_integrity 
                     CHECK (
@@ -105,13 +105,13 @@ class ObReflectionTest(unittest.TestCase):
                         AND JSON_VALID(chunk_metadata)
                         AND (text_content IS NOT NULL OR embeddings IS NOT NULL)
                     ),
-                    
+
                 -- Unique constraint for document chunk combination
                 CONSTRAINT uk_document_chunk UNIQUE (document_id, chunk_id),
-                
+
                 -- Vector index for similarity search (typical in document indexing)
                 VECTOR INDEX vidx_embeddings (embeddings) WITH (DISTANCE=L2, TYPE=HNSW, LIB=VSAG),
-                
+
                 -- Regular indexes for document indexing queries
                 INDEX idx_document_id (document_id),
                 INDEX idx_chunk_id (chunk_id),
@@ -136,6 +136,9 @@ class ObReflectionTest(unittest.TestCase):
                     # Explicitly trigger reflection so that _parse_constraints path is exercised
                     md = MetaData()
                     Table(document_index_table, md, autoload_with=conn)
+                    # Force inspector path to exercise FK parsing
+                    insp = inspect(conn)
+                    _ = insp.get_foreign_keys(document_index_table)
 
                     # Verify tables were created successfully
                     result = conn.execute(text(f"SHOW CREATE TABLE {document_index_table}"))
