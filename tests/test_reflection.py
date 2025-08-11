@@ -192,6 +192,61 @@ class ObReflectionTest(unittest.TestCase):
     def test_parse_constraints_string_spec_no_crash(self):
         pass
 
+    def test_fk_parse_from_show_create_never_string_spec(self):
+        """Database-only: ensure SHOW CREATE TABLE lines parsed as fk_constraint never return string spec."""
+        from pyobvector.client import ObVecClient
+        from sqlalchemy import text
+
+        client = ObVecClient()
+        documents_table = "test_documents_sc"
+        document_index_table = "test_document_index_sc"
+
+        try:
+            client.drop_table_if_exist(document_index_table)
+            client.drop_table_if_exist(documents_table)
+
+            documents_ddl = f"""
+            CREATE TABLE {documents_table} (
+                id INT PRIMARY KEY,
+                title VARCHAR(200)
+            )
+            """
+
+            # Variant with schema-qualified reference to influence SHOW CREATE output
+            document_index_ddl = f"""
+            CREATE TABLE {document_index_table} (
+                id INT PRIMARY KEY,
+                document_id INT NOT NULL,
+                CONSTRAINT `fk_doc_restrict_sc`
+                    FOREIGN KEY (`document_id`)
+                    REFERENCES `{documents_table}`(`id`)
+                    ON UPDATE RESTRICT ON DELETE RESTRICT
+            )
+            """
+
+            with client.engine.connect() as conn:
+                with conn.begin():
+                    conn.execute(text(documents_ddl))
+                    conn.execute(text(document_index_ddl))
+
+                    result = conn.execute(text(f"SHOW CREATE TABLE {document_index_table}"))
+                    create_table_sql = result.fetchone()[1]
+
+                    parser = conn.dialect._tabledef_parser
+                    for line in create_table_sql.splitlines():
+                        parsed = parser._parse_constraints(line)
+                        if parsed and parsed[0] == "fk_constraint":
+                            _, spec = parsed
+                            self.assertIsInstance(
+                                spec, dict, f"Expected dict spec, got {type(spec)} for line: {line}"
+                            )
+        finally:
+            try:
+                client.drop_table_if_exist(document_index_table)
+                client.drop_table_if_exist(documents_table)
+            except Exception:
+                pass
+
 
 
 
