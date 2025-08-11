@@ -43,7 +43,7 @@ class ObReflectionTest(unittest.TestCase):
         instead of dict spec, causing AttributeError: 'str' object has no attribute 'get'.
         """
         from pyobvector.client import ObVecClient
-        from sqlalchemy import text, Column, Integer, String, JSON, TEXT
+        from sqlalchemy import text, MetaData, Table
         from pyobvector.schema import VECTOR
         
         # Create a client to connect to real OceanBase
@@ -132,7 +132,11 @@ class ObReflectionTest(unittest.TestCase):
                     # If the bug still exists, this will raise:
                     # AttributeError: 'str' object has no attribute 'get'
                     conn.execute(text(document_index_ddl))
-                    
+
+                    # Explicitly trigger reflection so that _parse_constraints path is exercised
+                    md = MetaData()
+                    Table(document_index_table, md, autoload_with=conn)
+
                     # Verify tables were created successfully
                     result = conn.execute(text(f"SHOW CREATE TABLE {document_index_table}"))
                     create_table_sql = result.fetchone()[1]
@@ -185,6 +189,43 @@ class ObReflectionTest(unittest.TestCase):
                 client.drop_table_if_exist(documents_table)
             except Exception:
                 pass  # Cleanup failures are not critical
+
+    def test_parse_constraints_string_spec_no_crash(self):
+        """Deterministic test to ensure string spec won't raise AttributeError and dict spec is normalized."""
+        from sqlalchemy.dialects.mysql.reflection import MySQLTableDefinitionParser
+        from unittest.mock import patch
+        from pyobvector.schema.reflection import OceanBaseTableDefinitionParser
+        import copy
+
+        class MockParser(OceanBaseTableDefinitionParser):
+            def __init__(self):
+                # Avoid parent __init__ and heavy setup
+                self.default_schema = "test"
+
+        parser = MockParser()
+
+        # Case 1: parent returns string spec (the original crash path)
+        with patch.object(MySQLTableDefinitionParser, "_parse_constraints", return_value=("fk_constraint", "string_spec")):
+            result = parser._parse_constraints("dummy line")
+            self.assertEqual(result, ("fk_constraint", "string_spec"))
+
+        # Case 2: parent returns dict spec needing normalization
+        dict_spec_input = ("fk_constraint", {
+            "table": ["test", "other_table"],
+            "onupdate": "restrict",
+            "ondelete": "restrict",
+        })
+        expected_spec = {
+            "table": ["other_table"],
+            "onupdate": None,
+            "ondelete": None,
+        }
+        with patch.object(MySQLTableDefinitionParser, "_parse_constraints", return_value=copy.deepcopy(dict_spec_input)):
+            result = parser._parse_constraints("dummy line")
+            self.assertIsNotNone(result)
+            tp, spec = result
+            self.assertEqual(tp, "fk_constraint")
+            self.assertEqual(spec, expected_spec)
 
 
 
